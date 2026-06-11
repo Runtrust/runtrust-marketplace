@@ -1,0 +1,13 @@
+{
+  "name": "runtrust",
+  "owner": { "name": "RunTrust", "url": "https://app.runtrust.ai" },
+  "description": "RunTrust governance plugins for Claude Code.",
+  "plugins": [
+    {
+      "name": "sentinel",
+      "source": "./plugins/sentinel",
+      "description": "Sentinel governance connector — PreToolUse policy enforcement + audit.",
+      "category": "security"
+    }
+  ]
+}

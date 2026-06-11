@@ -1,0 +1,8 @@
+{
+  "name": "sentinel",
+  "version": "0.1.0",
+  "description": "RunTrust/Sentinel governance connector for Claude Code — PreToolUse policy enforcement with audit. Run /sentinel:setup with your install token after installing.",
+  "author": { "name": "RunTrust", "url": "https://app.runtrust.ai" },
+  "homepage": "https://app.runtrust.ai",
+  "keywords": ["security", "governance", "audit", "policy", "sentinel", "runtrust"]
+}
