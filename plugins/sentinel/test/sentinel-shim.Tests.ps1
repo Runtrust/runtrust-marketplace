@@ -273,4 +273,32 @@ Describe 'sentinel-shim freeze-proof delegation' {
     ($r.Out) | Should -Match 'not reading input'
     (Get-Content -Raw (Join-Path (Join-Path $h 'logs') 'sentinel-shim.ndjson')) | Should -Match 'hook-stdin-write-timeout'
   }
+
+  It 'bounds the stdin READ when CC never closes the hook stdin pipe (hard-wedge guard)' -Tag 'timeout' {
+    # Models the VSCode-panel hard-wedge: CC invokes the hook but never closes
+    # the hook's stdin. An unbounded [Console]::In.ReadToEnd() would hang the
+    # shim forever, wedging CC's synchronous hook-invocation loop (Stop button
+    # unresponsive; only a window reload recovers). The shim must self-terminate
+    # via a bounded read and emit a populated fail-open allow + diagnostic.
+    $h=Join-Path ([IO.Path]::GetTempPath()) ("shim stdinread "+[guid]::NewGuid()); New-Item -ItemType Directory -Force (Join-Path $h 'bin')|Out-Null
+    [IO.File]::WriteAllText((Join-Path $h 'config.json'),'{"tenantId":"t"}',(New-Object Text.UTF8Encoding($false)))
+    $stub=Join-Path (Join-Path $h 'bin') 'unused-hook.cmd'
+    [IO.File]::WriteAllText($stub,"@echo off`r`necho {}`r`n",(New-Object Text.UTF8Encoding($false)))
+    $psi=New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName='powershell'
+    $psi.Arguments="-NoProfile -ExecutionPolicy Bypass -File `"$Shim`" -SentinelHome `"$h`" -HookExe `"$stub`""
+    $psi.UseShellExecute=$false; $psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+    $psi.StandardOutputEncoding=[System.Text.Encoding]::UTF8
+    $sw=[System.Diagnostics.Stopwatch]::StartNew()
+    $p=[System.Diagnostics.Process]::Start($psi)
+    $o=$p.StandardOutput.ReadToEndAsync(); $e=$p.StandardError.ReadToEndAsync()
+    # Deliberately DO NOT write or close stdin — the shim's read must time out.
+    $exited=$p.WaitForExit(8000); $sw.Stop()
+    if (-not $exited) { try { $p.Kill() } catch {} }
+    $exited | Should -Be $true
+    $sw.ElapsedMilliseconds | Should -BeLessThan 6000
+    ($o.Result) | Should -Match 'permissionDecision":"allow"'
+    ($o.Result) | Should -Match 'did not receive input'
+    (Get-Content -Raw (Join-Path (Join-Path $h 'logs') 'sentinel-shim.ndjson')) | Should -Match 'hook-stdin-read-timeout'
+  }
 }

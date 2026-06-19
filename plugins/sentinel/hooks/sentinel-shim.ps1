@@ -32,9 +32,6 @@ if (-not $HookExe -or $HookExe -eq '') {
 }
 $config = Join-Path $SentinelHome 'config.json'
 
-# Read all of stdin (the PreToolUse JSON envelope).
-$stdin = [Console]::In.ReadToEnd()
-
 function Write-ShimDiag([string]$reason) {
   try {
     $logDir = Join-Path $SentinelHome 'logs'
@@ -52,6 +49,40 @@ function Write-AllowWire([string]$context) {
   [Console]::Out.Write((ConvertTo-Json $obj -Compress -Depth 5))
   [Console]::Out.Write("`n")
 }
+
+# Read all of stdin (the PreToolUse JSON envelope) with a BOUNDED wait. Claude
+# Code writes the envelope then closes the hook's stdin; an unbounded
+# [Console]::In.ReadToEnd() hangs forever if CC ever fails to close stdin, which
+# wedges the VSCode panel's synchronous hook-invocation loop — the Stop button
+# stops responding and only a window reload recovers (hard-wedge variant of
+# docs/risks/active/2026-06-12-cc-plugin-model-loop-stalls.md; upstream
+# precedent anthropics/claude-code#67948 — a synchronous op blocking the
+# extension event loop). We read via OpenStandardInput()+StreamReader rather
+# than [Console]::In because the latter's SyncTextReader runs ReadToEndAsync
+# SYNCHRONOUSLY on .NET Framework (no timeout benefit); the StreamReader over the
+# raw stream offloads the blocking read so Wait($timeoutMs) unblocks our main
+# thread. On timeout/error: fail OPEN with a populated allow + diagnostic (never
+# originate a deny, never emit a bare wire). Mirrors the child-phase bounding
+# below; the shim then has NO unbounded operation anywhere.
+$stdinReadTimeoutMs = 2000
+$stdin = ''
+try {
+  $stdinStream = [Console]::OpenStandardInput()
+  $stdinReader = New-Object System.IO.StreamReader($stdinStream, $utf8NoBom)
+  $stdinReadTask = $stdinReader.ReadToEndAsync()
+  if ($stdinReadTask.Wait($stdinReadTimeoutMs)) {
+    $stdin = $stdinReadTask.Result
+  } else {
+    Write-ShimDiag 'hook-stdin-read-timeout'
+    Write-AllowWire 'Sentinel connector did not receive input - allowed.'
+    exit 0
+  }
+} catch {
+  Write-ShimDiag ('hook-stdin-read-error: ' + $_.Exception.Message)
+  Write-AllowWire 'Sentinel connector could not read input - allowed.'
+  exit 0
+}
+if ($null -eq $stdin) { $stdin = '' }
 
 # Pre-setup gate (case a): not configured -> populated allow (NORMAL; no diagnostic).
 if (-not (Test-Path $config)) { Write-AllowWire 'Sentinel not configured - allowed.'; exit 0 }
