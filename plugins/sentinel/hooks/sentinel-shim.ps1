@@ -108,9 +108,11 @@ if (-not $env:CLAUDE_PROJECT_DIR) {
 
 # Bounded delegation: a hung/cold daemon must never freeze CC's loop. Relay a real
 # decision EXACTLY; on timeout/empty/exception emit a populated allow (never empty,
-# never originate a deny). Each phase (stdin write, WaitForExit) is bounded at
-# $timeoutMs, so worst-case end-to-end is ~2x$timeoutMs + kill overhead (~4.5s) —
-# bounded either way, the freeze-proof property is per-phase, not a single budget.
+# never originate a deny). THREE sequential phases are each bounded: stdin write
+# ($timeoutMs=2000), WaitForExit ($timeoutMs=2000), and the post-exit stdout line read
+# ($readBudgetMs=1500, added with the cold-spawn freeze fix), so worst-case end-to-end
+# is ~2x$timeoutMs + $readBudgetMs + kill overhead (~5.5s) — bounded either way; the
+# freeze-proof property is per-phase, not a single budget.
 # PS 5.1/.NET Framework: .Arguments STRING only (no ArgumentList).
 $timeoutMs = 2000
 try {
@@ -131,8 +133,17 @@ try {
   $psi.StandardErrorEncoding = $utf8NoBom
 
   $proc = [System.Diagnostics.Process]::Start($psi)
-  # Drain BOTH pipes async BEFORE waiting (a full pipe buffer would deadlock WaitForExit).
-  $outTask = $proc.StandardOutput.ReadToEndAsync()
+  # Read ONE stdout line async BEFORE waiting (a full pipe buffer would deadlock
+  # WaitForExit). The hook writes exactly one newline-terminated JSON decision line
+  # then exits; ReadLineAsync returns as soon as that line is buffered — it does NOT
+  # wait for stdout EOF. THIS IS THE COLD-SPAWN FREEZE FIX: on Windows a detached
+  # daemon that inherited the hook's stdout pipe (CreateProcess bInheritHandles)
+  # keeps the write-end open after the hook exits, so the prior ReadToEndAsync().Result
+  # blocked forever on an EOF that never arrived. A single-line read is immune.
+  # (stderr is still drained via ReadToEndAsync but never awaited — a fire-and-forget
+  # drain; if the daemon also holds the stderr pipe, that dangling task is abandoned
+  # on exit and never blocks the shim.)
+  $outTask = $proc.StandardOutput.ReadLineAsync()
   $errTask = $proc.StandardError.ReadToEndAsync()   # drained + discarded (kept out of relay)
   # Bounded stdin write: a child that never reads stdin must not block us past the
   # timeout. Write raw UTF-8 bytes to the base stream async and cap the wait at $timeoutMs.
@@ -156,8 +167,20 @@ try {
     exit 0
   }
 
-  # Normal exit -> the stdout pipe is closed, so reading the drained task is safe.
+  # Normal exit. BOUND the line read at $readBudgetMs: even after the hook process
+  # exits, a detached grandchild (the daemon) may still hold the stdout pipe
+  # write-end, so ReadLineAsync could block on an EOF that never arrives. The
+  # decision line is already buffered the instant the hook wrote it, so this
+  # completes immediately on the happy path; only a hook that exited WITHOUT writing
+  # a line AND left the pipe held hits the bound -> fail OPEN (populated allow +
+  # diagnostic). The shim exits immediately on timeout, abandoning the dangling read.
   $code = $proc.ExitCode
+  $readBudgetMs = 1500
+  if (-not $outTask.Wait($readBudgetMs)) {
+    Write-ShimDiag 'hook-stdout-read-timeout'
+    Write-AllowWire 'Sentinel connector stdout not closed - allowed.'
+    exit 0
+  }
   $text = $outTask.Result
   if ($null -eq $text) { $text = '' }
   if ($text.Length -eq 0) {

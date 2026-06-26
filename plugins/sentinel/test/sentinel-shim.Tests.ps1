@@ -302,3 +302,70 @@ Describe 'sentinel-shim freeze-proof delegation' {
     (Get-Content -Raw (Join-Path (Join-Path $h 'logs') 'sentinel-shim.ndjson')) | Should -Match 'hook-stdin-read-timeout'
   }
 }
+
+Describe 'sentinel-shim cold-spawn bounded stdout read (freeze fix)' {
+  # The freeze fix replaces the shim's unbounded ReadToEndAsync().Result (which
+  # blocked forever on a stdout EOF that never arrives when the detached daemon
+  # inherits the hook's stdout pipe) with a BOUNDED single-line ReadLineAsync().
+  #
+  # Coverage note (honest, per "no silent caps"): the held-pipe FREEZE itself is NOT
+  # reproducible in this Pester harness, and it is NOT for lack of trying. Empirically:
+  # a node grandchild spawned by a node parent DOES inherit and hold the parent's stdout
+  # fd for the timer's lifetime (so the leak is real) — BUT the shim launches a .cmd hook
+  # via `cmd.exe /c`, and that intervening cmd layer breaks the handle-inheritance chain
+  # (the grandchild does not hold the shim<->cmd pipe). The shim ALWAYS wraps .cmd/.bat
+  # via cmd.exe, so a stub cannot reproduce the production path, where the real
+  # SEA-exe hook spawns the daemon DIRECTLY (libuv bInheritHandles=TRUE, no cmd layer)
+  # and the daemon keeps the hook's stdout pipe open. The freeze (and the
+  # hook-stdout-read-timeout fail-open) are therefore verified AUTHORITATIVELY by the
+  # deterministic acceptance repro against the real cc-hook.exe -> daemon (see
+  # docs/changes/2026-06-26-daemon-cold-spawn-detach.md and the PR verification).
+  # What IS reliably unit-testable here is the OBSERVABLE consequence of the
+  # ReadToEnd -> ReadLine switch: the shim now relays only the FIRST stdout line.
+  # (Pre-fix ReadToEnd concatenated all stdout; post-fix ReadLine returns one line —
+  # empirically confirmed to discriminate the two implementations.)
+  BeforeAll {
+    function script:Invoke-ShimBounded($shim, $shimHome, $hookExe, $stdinJson, $waitMs) {
+      $psi = New-Object System.Diagnostics.ProcessStartInfo
+      $psi.FileName = 'powershell'
+      $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$shim`" -SentinelHome `"$shimHome`" -HookExe `"$hookExe`""
+      $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+      $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+      $sw = [System.Diagnostics.Stopwatch]::StartNew()
+      $p = [System.Diagnostics.Process]::Start($psi)
+      $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+      $p.StandardInput.Write($stdinJson); $p.StandardInput.Close()
+      $exited = $p.WaitForExit($waitMs); $sw.Stop()
+      if (-not $exited) { try { $p.Kill() } catch { } }
+      $outText = ''
+      try { $outText = $o.Result } catch { $outText = '' }
+      [pscustomobject]@{ Out = $outText; Ms = $sw.ElapsedMilliseconds; Exited = $exited }
+    }
+  }
+
+  It 'relays ONLY the first decision line (ReadLine, not ReadToEnd) - the core fix regression' {
+    # Empirically: pre-fix ReadToEnd relays BOTH lines (Out contains "second");
+    # post-fix ReadLine relays only the first. This is the reliable discriminator.
+    $h = Join-Path ([IO.Path]::GetTempPath()) ("shim multiline " + [guid]::NewGuid()); New-Item -ItemType Directory -Force (Join-Path $h 'bin') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $h 'config.json'), '{"tenantId":"t"}', (New-Object Text.UTF8Encoding($false)))
+    $stub = Join-Path (Join-Path $h 'bin') 'multiline-hook.cmd'
+    $first = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"first"}}'
+    $second = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"second"}}'
+    [IO.File]::WriteAllText($stub, "@echo off`r`necho $first`r`necho $second`r`n", (New-Object Text.UTF8Encoding($false)))
+    $r = Invoke-ShimBounded $Shim $h $stub '{"tool_name":"Read","tool_input":{}}' 4000
+    $r.Exited | Should -Be $true
+    ($r.Out) | Should -Match 'first'
+    ($r.Out) | Should -Not -Match 'second'
+  }
+
+  It 'relays a single-line DENY exactly through the bounded read (no masking, single LF)' {
+    $h = Join-Path ([IO.Path]::GetTempPath()) ("shim rl deny " + [guid]::NewGuid()); New-Item -ItemType Directory -Force (Join-Path $h 'bin') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $h 'config.json'), '{"tenantId":"t"}', (New-Object Text.UTF8Encoding($false)))
+    $stub = Join-Path (Join-Path $h 'bin') 'rl-deny-hook.cmd'
+    $deny = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"bounded-read-relay"}}'
+    [IO.File]::WriteAllText($stub, "@echo off`r`necho $deny`r`n", (New-Object Text.UTF8Encoding($false)))
+    $r = Invoke-ShimBounded $Shim $h $stub '{"tool_name":"Read","tool_input":{}}' 4000
+    $r.Exited | Should -Be $true
+    ($r.Out).Trim() | Should -BeExactly $deny
+  }
+}
