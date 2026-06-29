@@ -369,3 +369,46 @@ Describe 'sentinel-shim cold-spawn bounded stdout read (freeze fix)' {
     ($r.Out).Trim() | Should -BeExactly $deny
   }
 }
+
+Describe 'sentinel-shim handle-scrub fail-open (-SelfTestScrubThrow)' {
+  # The handle scrub (Clear-InheritableHandles) is wrapped so a scrub failure
+  # fails OPEN: the shim logs a 'handle-scrub-failed' diagnostic and proceeds to
+  # spawn the hook, so the decision relay still works. This seam is driven by the
+  # -SelfTestScrubThrow SWITCH (not an env var — an env var could leak from a
+  # user's shell profile into a real CC invocation and silently disable the scrub
+  # on a safety-sensitive path). CC's hooks.json command line never passes the
+  # switch, so the seam cannot trigger in production. We pass it on the child
+  # powershell command line here to force the scrub-failed branch against the REAL
+  # (child-process) shim — a function stub in the parent test scope cannot reach
+  # the spawned shim's Clear-InheritableHandles.
+  BeforeAll {
+    function script:Invoke-ShimSelfTestThrow($shim, $shimHome, $hookExe, $stdinJson) {
+      $psi = New-Object System.Diagnostics.ProcessStartInfo
+      $psi.FileName = 'powershell'
+      $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$shim`" -SentinelHome `"$shimHome`" -HookExe `"$hookExe`" -SelfTestScrubThrow"
+      $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+      $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+      $p = [System.Diagnostics.Process]::Start($psi)
+      $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+      $p.StandardInput.Write($stdinJson); $p.StandardInput.Close()
+      $exited = $p.WaitForExit(8000)
+      if (-not $exited) { try { $p.Kill() } catch { } }
+      [pscustomobject]@{ Out = $o.Result; Exit = $p.ExitCode; Exited = $exited }
+    }
+  }
+
+  It 'fails OPEN on a forced scrub failure: still relays the hook decision + logs handle-scrub-failed' {
+    $h = Join-Path ([IO.Path]::GetTempPath()) ("shim scrubfail " + [guid]::NewGuid()); New-Item -ItemType Directory -Force (Join-Path $h 'bin') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $h 'config.json'), '{"tenantId":"t"}', (New-Object Text.UTF8Encoding($false)))
+    $stub = Join-Path (Join-Path $h 'bin') 'scrubfail-hook.cmd'
+    $deny = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"scrub-failopen-relay"}}'
+    [IO.File]::WriteAllText($stub, "@echo off`r`necho $deny`r`n", (New-Object Text.UTF8Encoding($false)))
+    $r = Invoke-ShimSelfTestThrow $Shim $h $stub '{"tool_name":"Read","tool_input":{}}'
+    $r.Exited | Should -Be $true
+    $r.Exit | Should -Be 0
+    # (a) fail-open: the forced scrub failure did NOT break the relay.
+    ($r.Out).Trim() | Should -BeExactly $deny
+    # (b) the scrub failure is recorded as a diagnostic.
+    (Get-Content -Raw (Join-Path (Join-Path $h 'logs') 'sentinel-shim.ndjson')) | Should -Match 'handle-scrub-failed'
+  }
+}

@@ -15,7 +15,7 @@ workspace.
 In Claude Code:
 
 ```
-/plugin marketplace add zviki4-hub/runtrust-marketplace
+/plugin marketplace add runtrust/runtrust-marketplace
 /plugin install sentinel@runtrust
 /sentinel:setup '<install-token>'
 /reload-plugins
@@ -40,4 +40,4 @@ hook allows every tool call and enforces nothing.
 
 ## License
 
-Apache-2.0 — see [LICENSE](https://github.com/zviki4-hub/runtrust-marketplace/blob/master/plugins/sentinel/LICENSE).
+Apache-2.0 — see [LICENSE](https://github.com/runtrust/runtrust-marketplace/blob/master/plugins/sentinel/LICENSE).

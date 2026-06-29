@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
   [string]$SentinelHome,
-  [string]$HookExe
+  [string]$HookExe,
+  # TEST-ONLY: never passed by CC's hooks.json command line; forces the scrub fail-open path for the Pester fail-open test.
+  [switch]$SelfTestScrubThrow
 )
 # Freeze-proof PreToolUse shim. EVERY path emits a populated wire: a real hook
 # decision is relayed exactly (byte-for-byte + single trailing LF); every other
@@ -48,6 +50,51 @@ function Write-AllowWire([string]$context) {
   $obj = [ordered]@{ hookSpecificOutput = [ordered]@{ hookEventName = 'PreToolUse'; permissionDecision = 'allow'; additionalContext = $context } }
   [Console]::Out.Write((ConvertTo-Json $obj -Compress -Depth 5))
   [Console]::Out.Write("`n")
+}
+
+function Clear-InheritableHandles {
+  # Clear HANDLE_FLAG_INHERIT on every inheritable handle this process holds, so
+  # the hook (and the daemon it later spawns) inherit no stray duplicate of CC's
+  # stdout pipe (the cold-spawn freeze). Comprehensive scrub — the prior
+  # single-std-handle SetHandleInformation attempt missed the [Console]::Out
+  # DUPLICATE; scrubbing all handles catches it (Phase 0 verified). P/Invoke via
+  # Reflection.Emit, NOT Add-Type (Add-Type spawns the persistent VBCSCompiler,
+  # which itself inherits the pipe and would defeat the scrub).
+  # Test seam (no production effect unless explicitly set): driven by the
+  # -SelfTestScrubThrow switch param (NOT an env var, which could leak from a
+  # user's shell profile into a real CC invocation and silently disable the
+  # scrub). Forces the documented fail-open path so the handle-scrub-failed
+  # diagnostic + relay-survives behavior is testable against the REAL
+  # (child-process) shim — the Pester harness spawns the shim, so a function
+  # stub in the parent test scope cannot reach Clear-InheritableHandles.
+  if ($SelfTestScrubThrow) { throw 'scrub-selftest-forced-failure' }
+  $asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
+    (New-Object Reflection.AssemblyName('SentinelHandleScrub')),
+    [Reflection.Emit.AssemblyBuilderAccess]::Run)
+  $mod = $asm.DefineDynamicModule('m', $false)
+  $tb = $mod.DefineType('K32', 'Public, Class')
+  $get = $tb.DefinePInvokeMethod('GetHandleInformation', 'kernel32.dll',
+    'Public, Static', [Reflection.CallingConventions]::Standard,
+    [bool], @([IntPtr], [uint32].MakeByRefType()),
+    [Runtime.InteropServices.CallingConvention]::Winapi,
+    [Runtime.InteropServices.CharSet]::Auto)
+  $get.SetImplementationFlags($get.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
+  $set = $tb.DefinePInvokeMethod('SetHandleInformation', 'kernel32.dll',
+    'Public, Static', [Reflection.CallingConventions]::Standard,
+    [bool], @([IntPtr], [uint32], [uint32]),
+    [Runtime.InteropServices.CallingConvention]::Winapi,
+    [Runtime.InteropServices.CharSet]::Auto)
+  $set.SetImplementationFlags($set.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
+  $k = $tb.CreateType()
+  # Windows handle values are small multiples of 4. Sweep a generous, bounded
+  # range (measured < ~200ms; the shim already budgets seconds) and clear inherit.
+  for ($h = 4; $h -le 0x10000; $h += 4) {
+    $flags = [uint32]0
+    $ptr = [IntPtr]$h
+    if ($k::GetHandleInformation($ptr, [ref]$flags)) {
+      if (($flags -band 1) -ne 0) { [void]$k::SetHandleInformation($ptr, [uint32]1, [uint32]0) }
+    }
+  }
 }
 
 # Read all of stdin (the PreToolUse JSON envelope) with a BOUNDED wait. Claude
@@ -110,9 +157,9 @@ if (-not $env:CLAUDE_PROJECT_DIR) {
 # decision EXACTLY; on timeout/empty/exception emit a populated allow (never empty,
 # never originate a deny). THREE sequential phases are each bounded: stdin write
 # ($timeoutMs=2000), WaitForExit ($timeoutMs=2000), and the post-exit stdout line read
-# ($readBudgetMs=1500, added with the cold-spawn freeze fix), so worst-case end-to-end
-# is ~2x$timeoutMs + $readBudgetMs + kill overhead (~5.5s) — bounded either way; the
-# freeze-proof property is per-phase, not a single budget.
+# ($readBudgetMs=1500, added with the 2026-06-26 bounded-read (shim internal block)),
+# so worst-case end-to-end is ~2x$timeoutMs + $readBudgetMs + kill overhead (~5.5s) —
+# bounded either way; the freeze-proof property is per-phase, not a single budget.
 # PS 5.1/.NET Framework: .Arguments STRING only (no ArgumentList).
 $timeoutMs = 2000
 try {
@@ -132,14 +179,15 @@ try {
   $psi.StandardOutputEncoding = $utf8NoBom
   $psi.StandardErrorEncoding = $utf8NoBom
 
+  try { Clear-InheritableHandles } catch { Write-ShimDiag ('handle-scrub-failed: ' + $_.Exception.Message) }
   $proc = [System.Diagnostics.Process]::Start($psi)
   # Read ONE stdout line async BEFORE waiting (a full pipe buffer would deadlock
   # WaitForExit). The hook writes exactly one newline-terminated JSON decision line
   # then exits; ReadLineAsync returns as soon as that line is buffered — it does NOT
-  # wait for stdout EOF. THIS IS THE COLD-SPAWN FREEZE FIX: on Windows a detached
-  # daemon that inherited the hook's stdout pipe (CreateProcess bInheritHandles)
-  # keeps the write-end open after the hook exits, so the prior ReadToEndAsync().Result
-  # blocked forever on an EOF that never arrived. A single-line read is immune.
+  # wait for stdout EOF. This bounds the SHIM's internal stdout read (the 2026-06-26
+  # partial fix); the COMPLETE cold-spawn freeze fix — preventing the daemon from
+  # inheriting/holding CC's stdout pipe — is Clear-InheritableHandles called above
+  # before the spawn (see docs/changes/2026-06-29-cc-coldspawn-handle-scrub.md).
   # (stderr is still drained via ReadToEndAsync but never awaited — a fire-and-forget
   # drain; if the daemon also holds the stderr pipe, that dangling task is abandoned
   # on exit and never blocks the shim.)
