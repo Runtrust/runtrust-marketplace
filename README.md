@@ -12,6 +12,8 @@ workspace.
 
 ## Install
 
+Supported platforms: **Windows** (generally available). **macOS** (arm64 + x64 autodetected) — rolling out; one-command setup becomes available once the signed darwin binaries are published to `app.runtrust.ai/downloads/` (pending).
+
 In Claude Code:
 
 ```
@@ -24,12 +26,17 @@ In Claude Code:
 Get your single-use install token from the **Install** page of your RunTrust
 workspace. The token is consumed by `/sentinel:setup` and cannot be replayed.
 
+`/sentinel:setup '<install-token>'` works on Windows today. The macOS path is
+implemented (bash, arch autodetected) and will be available once the signed
+darwin binaries are published to the edge.
+
 ## Commands
 
 - **`/sentinel:setup '<install-token>'`** — connect this machine to RunTrust.
   Downloads the signed connector binaries from
   https://app.runtrust.ai/downloads/ (checksum-verified), exchanges the token
-  for a tenant-bound credential, and starts the local connector.
+  for a tenant-bound credential, and starts the local connector. Available now
+  on Windows. macOS: pending signed-binary edge publish (see platform note above).
 - **`/sentinel:status`** — show local connector status.
 - **`/sentinel:uninstall`** — remove the local connector state.
 
