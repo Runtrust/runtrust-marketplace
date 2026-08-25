@@ -4,10 +4,10 @@
 #
 # This is the macOS analogue of the MODERN plugin setup path (Invoke-SentinelSetup),
 # NOT the deprecated standalone Install-Sentinel that deep-merges ~/.claude/settings.json.
-# Hook wiring is owned by the plugin's hooks.json (docs/system/cc-plugin.md:262-269):
+# Hook wiring is owned by the plugin's hooks.json (Sentinel-AI:docs/system/cc-plugin.md:262-269):
 # OS selection happens at install by copying the macOS manifest (hooks.darwin.json)
 # over the installed plugin's hooks.json — no fragile bash JSON surgery, and stock
-# macOS has no guaranteed jq. See docs/superpowers/specs/2026-06-29-macos-connector-design.md
+# macOS has no guaranteed jq. See Sentinel-AI:docs/superpowers/specs/2026-06-29-macos-connector-design.md
 # (decisions 2 + 4). The config scaffold is written UTF-8 with NO BOM, mirroring the
 # no-BOM discipline of scripts/install/SentinelCore.psm1:107-112 (a BOM breaks the
 # daemon/CLI JSON.parse).

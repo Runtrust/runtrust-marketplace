@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Freeze-proof PreToolUse shim (macOS / POSIX bash). Mirrors the Windows
-# sentinel-shim.ps1 contract documented in docs/system/cc-plugin.md "Hook shim"
-# items 1-7 and the spec docs/superpowers/specs/2026-06-29-macos-connector-design.md
+# sentinel-shim.ps1 contract documented in Sentinel-AI:docs/system/cc-plugin.md "Hook shim"
+# items 1-7 and the spec Sentinel-AI:docs/superpowers/specs/2026-06-29-macos-connector-design.md
 # (decision 3, full freeze-proof parity).
 #
 # EVERY path emits a POPULATED wire: a real hook decision is relayed exactly

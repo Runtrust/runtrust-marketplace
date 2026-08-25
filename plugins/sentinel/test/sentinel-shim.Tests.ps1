@@ -319,7 +319,7 @@ Describe 'sentinel-shim cold-spawn bounded stdout read (freeze fix)' {
   # and the daemon keeps the hook's stdout pipe open. The freeze (and the
   # hook-stdout-read-timeout fail-open) are therefore verified AUTHORITATIVELY by the
   # deterministic acceptance repro against the real cc-hook.exe -> daemon (see
-  # docs/changes/2026-06-26-daemon-cold-spawn-detach.md and the PR verification).
+  # Sentinel-AI:docs/changes/2026-06-26-daemon-cold-spawn-detach.md and the PR verification).
   # What IS reliably unit-testable here is the OBSERVABLE consequence of the
   # ReadToEnd -> ReadLine switch: the shim now relays only the FIRST stdout line.
   # (Pre-fix ReadToEnd concatenated all stdout; post-fix ReadLine returns one line —

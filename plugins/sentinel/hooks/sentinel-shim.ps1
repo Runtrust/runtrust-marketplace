@@ -10,7 +10,7 @@ param(
 # path (pre-setup, timeout, empty stdout, exception) emits a populated allow via
 # Write-AllowWire — never empty stdout (an empty/bare wire hangs CC's model
 # loop), and the shim never originates a deny. Delegation is time-boxed (each
-# phase bounded at $timeoutMs). See docs/system/cc-plugin.md.
+# phase bounded at $timeoutMs). See Sentinel-AI:docs/system/cc-plugin.md.
 $ErrorActionPreference = 'Continue'   # hook logs to stderr; must not abort the relay
 
 # FIX 1: Force UTF-8 (no BOM) for the relay round-trip. Decoding of the hook's
@@ -102,7 +102,7 @@ function Clear-InheritableHandles {
 # [Console]::In.ReadToEnd() hangs forever if CC ever fails to close stdin, which
 # wedges the VSCode panel's synchronous hook-invocation loop — the Stop button
 # stops responding and only a window reload recovers (hard-wedge variant of
-# docs/risks/active/2026-06-12-cc-plugin-model-loop-stalls.md; upstream
+# Sentinel-AI:docs/risks/active/2026-06-12-cc-plugin-model-loop-stalls.md; upstream
 # precedent anthropics/claude-code#67948 — a synchronous op blocking the
 # extension event loop). We read via OpenStandardInput()+StreamReader rather
 # than [Console]::In because the latter's SyncTextReader runs ReadToEndAsync
@@ -187,7 +187,7 @@ try {
   # wait for stdout EOF. This bounds the SHIM's internal stdout read (the 2026-06-26
   # partial fix); the COMPLETE cold-spawn freeze fix — preventing the daemon from
   # inheriting/holding CC's stdout pipe — is Clear-InheritableHandles called above
-  # before the spawn (see docs/changes/2026-06-29-cc-coldspawn-handle-scrub.md).
+  # before the spawn (see Sentinel-AI:docs/changes/2026-06-29-cc-coldspawn-handle-scrub.md).
   # (stderr is still drained via ReadToEndAsync but never awaited — a fire-and-forget
   # drain; if the daemon also holds the stderr pipe, that dangling task is abandoned
   # on exit and never blocks the shim.)
