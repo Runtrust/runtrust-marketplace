@@ -1,9 +1,15 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][string]$InstallToken,
-  [string]$Endpoint = 'https://app.runtrust.ai',
+  # No default - no endpoint, no setup (decision 15): the console's Install page renders
+  # the command with the address of the console that issued the token.
+  [string]$Endpoint,
   [string]$SentinelHome = (Join-Path $env:USERPROFILE '.sentinel')
 )
+# Refused here, before the module runs, with the Install-page message. An explicit check,
+# not [Parameter(Mandatory)]: a missing Mandatory value makes powershell.exe prompt on
+# stdin, which hangs or errors under Claude Code's Bash tool (decision 22).
+if ([string]::IsNullOrWhiteSpace($Endpoint)) { throw "no endpoint given - copy the command from your console's Install page" }
 Import-Module (Join-Path $PSScriptRoot 'SentinelCore.psm1') -Force -DisableNameChecking
 # NO Merge-ClaudeHook — the plugin's hooks/hooks.json owns the PreToolUse wiring.
 $result = Invoke-SentinelSetup -InstallToken $InstallToken -Endpoint $Endpoint -SentinelHome $SentinelHome

@@ -12,31 +12,48 @@
 # no-BOM discipline of scripts/install/SentinelCore.psm1:107-112 (a BOM breaks the
 # daemon/CLI JSON.parse).
 #
-# Usage:
-#   sentinel-install.sh [--endpoint URL] [--home DIR] --plugin-root DIR
+# Usage (--endpoint is MANDATORY for a full install and has no default — no endpoint, no
+# install; the console's Install page renders the command with --endpoint <its origin>):
+#   sentinel-install.sh --endpoint URL [--home DIR] --plugin-root DIR
 #   sentinel-install.sh --wire-only --plugin-root DIR        # only (re)wire the hook
 #   sentinel-install.sh --downloads-dir DIR ...              # offline/test: cp from DIR
 #
 set -euo pipefail
 
-endpoint="https://app.runtrust.ai"
+endpoint=""
 home="${HOME:-/tmp}/.sentinel"
 plugin_root="${CLAUDE_PLUGIN_ROOT:-}"
 downloads_dir=""
 wire_only=0
 
+die() { echo "sentinel-install: $1" >&2; exit 1; }
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --endpoint)      endpoint="${2:-}"; shift 2 ;;
-    --home)          home="${2:-}"; shift 2 ;;
-    --plugin-root)   plugin_root="${2:-}"; shift 2 ;;
-    --downloads-dir) downloads_dir="${2:-}"; shift 2 ;;
+    --endpoint | --home | --plugin-root | --downloads-dir)
+      # A value flag with no value is a message, not a silent exit (shift 2 would fail
+      # under set -e with nothing said).
+      [ "$#" -ge 2 ] || die "$1 needs a value"
+      case "$1" in
+        --endpoint)      endpoint="$2" ;;
+        --home)          home="$2" ;;
+        --plugin-root)   plugin_root="$2" ;;
+        --downloads-dir) downloads_dir="$2" ;;
+      esac
+      shift 2 ;;
     --wire-only)     wire_only=1; shift ;;
     *)               echo "sentinel-install: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
-die() { echo "sentinel-install: $1" >&2; exit 1; }
+# The endpoint rule (sentinel_endpoint_normalize) lives in the sibling sentinel-setup.sh as
+# sourceable helpers — its main body is guarded and does not run when sourced. The two files
+# ship together in scripts/install/ and in the plugin's scripts/ (the locked set that
+# package-plugin.sh copies and CI holds byte-identical).
+_here="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$_here/sentinel-setup.sh" ] || die "sentinel-setup.sh is missing next to this script ($_here); reinstall the plugin"
+# shellcheck disable=SC1091
+. "$_here/sentinel-setup.sh"
 
 sha256_of() {
   if command -v sha256sum > /dev/null 2>&1; then
@@ -61,6 +78,12 @@ if [ "$wire_only" -eq 1 ]; then
   wire_plugin
   exit 0
 fi
+
+# No endpoint, no install (decision 15): mandatory and validated before any download,
+# placement or write — refused here, nothing under $home exists yet.
+[ -n "$endpoint" ] || die "no endpoint given — copy the command from your console's Install page"
+endpoint="$(sentinel_endpoint_normalize "$endpoint")" \
+  || die "the --endpoint is not a usable address — copy the command from your console's Install page"
 
 # A full install MUST wire the hook (wiring is owned by the plugin manifest — decision
 # 4). The plugin root is therefore REQUIRED up front: a "successful" install that never

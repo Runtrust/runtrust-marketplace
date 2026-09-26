@@ -12,31 +12,36 @@ workspace.
 
 ## Install
 
-Supported platforms: **Windows** (generally available). **macOS** (arm64 + x64 autodetected) — rolling out; one-command setup becomes available once the signed darwin binaries are published to `app.runtrust.ai/downloads/` (pending).
+Supported platforms: **Windows** (generally available). **macOS** (arm64 + x64 autodetected) — rolling out; one-command setup becomes available once the signed darwin binaries are published to your console's `/downloads/` (pending).
 
 In Claude Code:
 
 ```
 /plugin marketplace add runtrust/runtrust-marketplace
 /plugin install sentinel@runtrust
-/sentinel:setup '<install-token>'
+/sentinel:setup '<install-token>' --endpoint <your console's address>
 /reload-plugins
 ```
 
-Get your single-use install token from the **Install** page of your RunTrust
-workspace. The token is consumed by `/sentinel:setup` and cannot be replayed.
+Copy the `/sentinel:setup` line from the **Install** page of your RunTrust
+workspace: it carries your single-use install token and the address of the
+console that issued it, so the token is exchanged where it was issued. The
+token is consumed by `/sentinel:setup` and cannot be replayed. There is no
+default address — without `--endpoint` the setup stops before touching
+anything.
 
-`/sentinel:setup '<install-token>'` works on Windows today. The macOS path is
-implemented (bash, arch autodetected) and will be available once the signed
-darwin binaries are published to the edge.
+The setup command works on Windows today. The macOS path is implemented
+(bash, arch autodetected) and will be available once the signed darwin
+binaries are published to your console's `/downloads/`.
 
 ## Commands
 
-- **`/sentinel:setup '<install-token>'`** — connect this machine to RunTrust.
-  Downloads the signed connector binaries from
-  https://app.runtrust.ai/downloads/ (checksum-verified), exchanges the token
-  for a tenant-bound credential, and starts the local connector. Available now
-  on Windows. macOS: pending signed-binary edge publish (see platform note above).
+- **`/sentinel:setup '<install-token>' --endpoint <address>`** — connect this
+  machine to RunTrust. Downloads the signed connector binaries from
+  `<address>/downloads/` (checksum-verified), exchanges the token for a
+  tenant-bound credential at the console that issued it, and starts the local
+  connector. Available now on Windows. macOS: pending signed-binary publish
+  (see platform note above).
 - **`/sentinel:status`** — show local connector status.
 - **`/sentinel:uninstall`** — remove the local connector state.
 

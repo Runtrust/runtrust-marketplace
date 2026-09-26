@@ -93,8 +93,9 @@ Describe 'sentinel-uninstall.ps1' {
 # ---------------------------------------------------------------------------
 # sentinel-setup.ps1 — token redaction gate
 #
-# We pass a bogus install token to an UNREACHABLE endpoint (port 1 refuses
-# instantly). Invoke-SentinelSetup throws "Install-token exchange failed for
+# We pass a bogus install token to an UNREACHABLE endpoint (localhost port 1
+# refuses instantly; a hostname, because the endpoint rule refuses IP literals).
+# Invoke-SentinelSetup throws "Install-token exchange failed for
 # token <REDACTED>..." — the wrapper does NOT catch it, so the error surfaces
 # in the captured streams. The key assertion is that the raw token string
 # NEVER appears in the captured output, proving Redact-Secret ran.
@@ -110,7 +111,7 @@ Describe 'sentinel-setup.ps1' {
             $out = & powershell -NoProfile -ExecutionPolicy Bypass `
                 -File $wrapperPath `
                 -InstallToken $rawToken `
-                -Endpoint 'http://127.0.0.1:1' `
+                -Endpoint 'http://localhost:1' `
                 -SentinelHome $sentHome *>&1 | Out-String
 
             # The wrapper will exit non-zero (the throw propagates) — that is
@@ -132,6 +133,35 @@ Describe 'sentinel-setup.ps1' {
                 $logContent = Get-Content -Raw $installLog
                 $logContent | Should -Not -Match ([regex]::Escape($rawToken))
             }
+        } finally {
+            if (Test-Path $sentHome) {
+                Remove-Item -Path $sentHome -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# sentinel-setup.ps1 — no endpoint, no setup (E-cc decision 15). The wrapper has
+# no default endpoint; without -Endpoint it stops with the Install-page message
+# before touching the home dir, and never echoes the token.
+# ---------------------------------------------------------------------------
+Describe 'sentinel-setup.ps1 — no endpoint, no setup' {
+    It 'refuses to run without -Endpoint, names the Install page, writes nothing, echoes no token' {
+        $sentHome = Join-Path ([IO.Path]::GetTempPath()) ("wrap-noep-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $sentHome -Force | Out-Null
+        $rawToken = 'SECRET-TOKEN-456'
+        try {
+            $wrapperPath = $script:SetupWrapper
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass `
+                -File $wrapperPath `
+                -InstallToken $rawToken `
+                -SentinelHome $sentHome *>&1 | Out-String
+            $LASTEXITCODE | Should -Not -Be 0
+            $out | Should -Match 'Install page'
+            $out | Should -Not -Match ([regex]::Escape($rawToken))
+            (Test-Path (Join-Path $sentHome 'logs')) | Should -BeFalse
+            (Test-Path (Join-Path $sentHome 'config.json')) | Should -BeFalse
         } finally {
             if (Test-Path $sentHome) {
                 Remove-Item -Path $sentHome -Recurse -Force -ErrorAction SilentlyContinue

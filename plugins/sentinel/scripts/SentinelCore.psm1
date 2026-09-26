@@ -749,11 +749,69 @@ function ConvertTo-MutableHashtable {
 # hook EXE directly via Invoke-HookExe (NOT through settings.json), so wiring
 # the hook after the probe changes no result.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Test-SentinelEndpoint: the endpoint rule (Mac connector install, decisions 14
+# and 15) — the same rule the bash scripts apply (sentinel_endpoint_normalize in
+# sentinel-setup.sh): an absolute http(s) URL whose host is DNS labels (letters,
+# digits, hyphens; no leading or trailing hyphen; at most 63 chars each) with an
+# optional port; no user info, query or fragment; no whitespace or control
+# character anywhere; an optional path. IPv4 and IPv6 literals are refused —
+# they have no DNS label, and the host's first label is the `environment` this
+# install writes on every decision. Stricter than the gateway's own rule for its
+# SENTINEL_PUBLIC_ENDPOINT (auth-reenroll.ts checks the first label's charset
+# and refuses IP literals) — every plan environment's value passes both. Returns
+# the endpoint with its trailing slashes removed; throws with the reason — the
+# Install-page message when it is empty. No default anywhere: no endpoint, no
+# setup.
+# ---------------------------------------------------------------------------
+function Test-SentinelEndpoint {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$Endpoint)
+    if ([string]::IsNullOrWhiteSpace($Endpoint)) {
+        throw "no endpoint given — copy the command from your console's Install page"
+    }
+    if ($Endpoint -match '[\s\p{C}]') { throw "endpoint must not contain whitespace or control characters: '$Endpoint'" }
+    $u = $null
+    if (-not [uri]::TryCreate($Endpoint, [System.UriKind]::Absolute, [ref]$u) -or
+        ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https')) {
+        throw "endpoint must be an absolute http(s):// URL, got '$Endpoint' — copy the command from your console's Install page"
+    }
+    if ($u.UserInfo) { throw "endpoint must not carry user info: '$Endpoint'" }
+    if ($u.Query -or $u.Fragment) { throw "endpoint must not carry a query or fragment: '$Endpoint'" }
+    if ($u.HostNameType -eq [System.UriHostNameType]::IPv4 -or $u.HostNameType -eq [System.UriHostNameType]::IPv6) {
+        throw "endpoint host is an IP literal and has no DNS label: '$Endpoint' — use a hostname"
+    }
+    $labelRe = '^(?i)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'
+    if ($u.HostNameType -ne [System.UriHostNameType]::Dns -or $u.Host -notmatch $labelRe) {
+        throw "endpoint host must be a hostname of DNS labels (letters, digits, hyphens): '$Endpoint'"
+    }
+    # [uri] reads an empty port ('https://host:') as the scheme default; the bash rule refuses it.
+    $authority = ($Endpoint -replace '^[A-Za-z]+://', '') -replace '[/?#].*$', ''
+    if ($authority.EndsWith(':') -or $u.Port -lt 1 -or $u.Port -gt 65535) { throw "endpoint port must be 1-65535: '$Endpoint'" }
+    return $Endpoint.TrimEnd('/')
+}
+
+# ---------------------------------------------------------------------------
+# Get-SentinelEnvironmentLabel: the endpoint host's first DNS label, lowercased —
+# the `environment` this install writes (decision 14: eu1 / sentinel-staging /
+# localhost, verbatim from the host; no lookup table, no default). Applies
+# Test-SentinelEndpoint first, so an IP literal or a bad URL throws the same way.
+# ---------------------------------------------------------------------------
+function Get-SentinelEnvironmentLabel {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Endpoint)
+    $u = [uri](Test-SentinelEndpoint -Endpoint $Endpoint)
+    return $u.Host.Split('.')[0].ToLowerInvariant()
+}
+
 function Invoke-SentinelSetup {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$InstallToken,
-        [string]$Endpoint = 'https://app.runtrust.ai',
+        # No default (decision 15: no endpoint, no setup). The console's Install page
+        # renders the command with -Endpoint <its own origin>; Test-SentinelEndpoint
+        # refuses an empty or unusable value before the first write.
+        [string]$Endpoint,
         [string]$SentinelHome = (Join-Path $env:USERPROFILE '.sentinel'),
         # Re-exchange the install token even when the existing config already
         # holds a live daemon credential (the reinstall heuristic otherwise skips).
@@ -772,6 +830,10 @@ function Invoke-SentinelSetup {
     $daemonName = 'sentinel-cc-daemon-win-x64.exe'
     $statusName = 'sentinel-status-win-x64.exe'
     $trayName   = 'sentinel-tray-win-x64.exe'
+
+    # No endpoint, no setup (decision 15): refused before the try block, so nothing is
+    # written — the catch below logs to install.log, which would create the home dir.
+    $Endpoint = Test-SentinelEndpoint -Endpoint $Endpoint
 
     try {
         # ----- 1. Preflight -------------------------------------------------
@@ -815,7 +877,12 @@ function Invoke-SentinelSetup {
                 Write-InstallLog -Message $skipWarn -Level WARN -LogFile $logFile
                 Write-Warning $skipWarn
             }
-            $resolvedEndpoint = if ($existingConfig.ContainsKey('endpoint') -and $existingConfig['endpoint']) { [string]$existingConfig['endpoint'] } else { $Endpoint }
+            $existingEndpoint = if ($existingConfig.ContainsKey('endpoint') -and $existingConfig['endpoint']) { [string]$existingConfig['endpoint'] } else { $Endpoint }
+            try {
+                $resolvedEndpoint = Test-SentinelEndpoint -Endpoint $existingEndpoint
+            } catch {
+                throw "the existing config's endpoint '$existingEndpoint' is not a usable address ($($_.Exception.Message)); re-run with -Force and the command from your console's Install page"
+            }
             $tenantId = if ($existingConfig.ContainsKey('tenantId')) { [string]$existingConfig['tenantId'] } else { '' }
             $apiKey   = $existingApiKey
             $installationId = if ($existingConfig.ContainsKey('installationId')) { [string]$existingConfig['installationId'] } else { '' }
@@ -835,12 +902,44 @@ function Invoke-SentinelSetup {
                 } | ConvertTo-Json
                 $exchanged = Invoke-RestMethod -Method Post -Uri "$Endpoint/v1/install/exchange" -Body $body -ContentType 'application/json'
             } catch {
-                throw "Install-token exchange failed for token $redToken : $($_.Exception.Message)"
+                # 401 is the one code with a known cause: the token is expired, already
+                # used, or was issued by a different console (decision 3) — say so, and
+                # name the endpoint it was tried at.
+                $status = $null
+                try { if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode } } catch { $status = $null }
+                if ($status -eq 401) {
+                    throw "the install token $redToken was not recognised by ${Endpoint}: expired, already used, or issued by a different RunTrust console — use the command from the console that issued it"
+                }
+                throw "Install-token exchange failed for token $redToken at ${Endpoint}: $($_.Exception.Message)"
             }
             if ($null -eq $exchanged -or -not $exchanged.apiKey -or -not $exchanged.tenantId) {
                 throw "Install-token exchange returned an incomplete response for token $redToken."
             }
-            $resolvedEndpoint = if ($exchanged.endpoint) { [string]$exchanged.endpoint } else { $Endpoint }
+            # The response's endpoint is the gateway's own SENTINEL_PUBLIC_ENDPOINT: bound
+            # when present, validated like -Endpoint, a difference said out loud (the bash
+            # script does the same; decision 21). Absent or unusable, the already-validated
+            # -Endpoint is bound — the single-use token is spent by now, so throwing here
+            # would burn it (code review L1); the unusable value is warned about.
+            $resolvedEndpoint = $Endpoint
+            if (($exchanged.PSObject.Properties.Name -contains 'endpoint') -and $exchanged.endpoint) {
+                $reported = [string]$exchanged.endpoint
+                $reportedOk = $null
+                try {
+                    $reportedOk = Test-SentinelEndpoint -Endpoint $reported
+                } catch {
+                    $bindWarn = "the service at $Endpoint reports an endpoint that is not a usable address ('$reported': $($_.Exception.Message)); binding to -Endpoint $Endpoint instead"
+                    Write-InstallLog -Message $bindWarn -Level WARN -LogFile $logFile
+                    Write-Warning $bindWarn
+                }
+                if ($reportedOk) {
+                    $resolvedEndpoint = $reportedOk
+                    if ($resolvedEndpoint -ne $Endpoint) {
+                        $bindWarn = "binding to $resolvedEndpoint (the address the service reports), not -Endpoint $Endpoint"
+                        Write-InstallLog -Message $bindWarn -Level WARN -LogFile $logFile
+                        Write-Warning $bindWarn
+                    }
+                }
+            }
             $tenantId = [string]$exchanged.tenantId
             $apiKey   = [string]$exchanged.apiKey
             $installationId = if ($exchanged.PSObject.Properties.Name -contains 'installationId' -and $exchanged.installationId) { [string]$exchanged.installationId } else { '' }
@@ -929,7 +1028,9 @@ function Invoke-SentinelSetup {
             tenantId       = $tenantId
             apiKey         = $apiKey
             daemonPath     = $daemonExe
-            environment    = 'prod'
+            # The environment label is the BOUND host's first DNS label (decision 14), so
+            # config.json's endpoint and environment can never disagree (decision 21).
+            environment    = (Get-SentinelEnvironmentLabel -Endpoint $resolvedEndpoint)
             installationId = $installationId
             deviceId       = $deviceId
             deviceHostname = $deviceHostname
@@ -1083,7 +1184,8 @@ function Install-SentinelDeprecated {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$InstallToken,
-        [string]$Endpoint = 'https://app.runtrust.ai',
+        # No default (decision 15) — Invoke-SentinelSetup refuses an empty endpoint.
+        [string]$Endpoint,
         [string]$SentinelHome = (Join-Path $env:USERPROFILE '.sentinel'),
         [switch]$Force
     )
