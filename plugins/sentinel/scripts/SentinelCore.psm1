@@ -368,7 +368,8 @@ function Get-AuditRowCount {
 # by mocking the hook invocation. The hook ALWAYS exits 0 after writing its
 # HookOutput JSON (even when the daemon is unreachable — that surfaces as a
 # `sentinel-unavailable` decision in stdout, NOT a nonzero exit), so the exit
-# code is deliberately NOT used as a success signal. NEVER throws.
+# code is deliberately NOT used as a success signal. Throws only when the hook
+# cannot be run at all (a missing path); Invoke-FirstDecisionProbe catches it.
 # ---------------------------------------------------------------------------
 function Invoke-HookExe {
     [CmdletBinding()]
@@ -394,7 +395,15 @@ function Invoke-HookExe {
     $json = $probeInput | ConvertTo-Json -Compress -Depth 5
     $prev = $env:CLAUDE_PROJECT_DIR
     $env:CLAUDE_PROJECT_DIR = $ProjectDir
+    # Run the hook in System32, never the project directory setup runs in (connector#31):
+    # a Bun-compiled hook loads .env / bunfig.toml from its cwd, and the daemon it spawns
+    # (which outlives setup) inherits that cwd. Read from the OS, not %SystemRoot%. A
+    # relative path is resolved first, against the caller's location.
+    try { $HookExePath = (Resolve-Path -LiteralPath $HookExePath -ErrorAction Stop).ProviderPath } catch { }
+    $pushed = $false
     try {
+        Push-Location -LiteralPath ([Environment]::SystemDirectory)
+        $pushed = $true
         # Capture STDOUT ONLY (the decision JSON). Route stderr to $null so the
         # hook's diagnostic logs do not leak into the probe's FirstDecisionDetail,
         # install.log, or the wrapper's returned object. Mirrors Get-SentinelStatus's
@@ -402,6 +411,7 @@ function Invoke-HookExe {
         $out = $json | & $HookExePath 2>$null
         return (($out | Out-String).Trim())
     } finally {
+        if ($pushed) { Pop-Location }
         $env:CLAUDE_PROJECT_DIR = $prev
     }
 }
@@ -1233,12 +1243,20 @@ function Get-SentinelStatus {
     $statusJson = ''
     $prevPref = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    # In System32, never the project directory /sentinel:status runs in (connector#31): a
+    # Bun-compiled binary loads .env / bunfig.toml from its cwd. Read from the OS. A relative
+    # path is resolved first, against the caller's location.
+    try { $statusExe = (Resolve-Path -LiteralPath $statusExe -ErrorAction Stop).ProviderPath } catch { }
+    $pushed = $false
     try {
+        Push-Location -LiteralPath ([Environment]::SystemDirectory)
+        $pushed = $true
         $out = & $statusExe --json 2>$null
         $statusJson = (($out | Out-String).Trim())
     } catch {
         $statusJson = ''
     } finally {
+        if ($pushed) { Pop-Location }
         $ErrorActionPreference = $prevPref
     }
 

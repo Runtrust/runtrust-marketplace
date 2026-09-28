@@ -32,6 +32,11 @@ if (-not $HookExe -or $HookExe -eq '') {
   # PS 5.1 Join-Path takes only Path + ChildPath; nest to build a 3-segment path.
   $HookExe = Join-Path (Join-Path $SentinelHome 'bin') 'sentinel-cc-hook-win-x64.exe'
 }
+# Anchor a relative -SentinelHome / -HookExe to where we were started: the hook runs in
+# System32 below (connector#31), where a relative .cmd / .bat hook would be looked up (an
+# .exe resolves against this process's directory either way); anchored, both are explicit.
+if (-not [System.IO.Path]::IsPathRooted($SentinelHome)) { $SentinelHome = Join-Path (Get-Location).ProviderPath $SentinelHome }
+if (-not [System.IO.Path]::IsPathRooted($HookExe)) { $HookExe = Join-Path (Get-Location).ProviderPath $HookExe }
 $config = Join-Path $SentinelHome 'config.json'
 
 function Write-ShimDiag([string]$reason) {
@@ -178,6 +183,11 @@ try {
   $psi.RedirectStandardError = $true
   $psi.StandardOutputEncoding = $utf8NoBom
   $psi.StandardErrorEncoding = $utf8NoBom
+  # The hook runs in System32, never in the project directory Claude Code starts us in
+  # (connector#31): a Bun-compiled hook loads .env / bunfig.toml from its cwd, and the
+  # daemon it spawns inherits that cwd. Read from the OS (GetSystemDirectoryW), not from
+  # %SystemRoot%; users cannot write it. $HookExe is absolute (anchored above).
+  $psi.WorkingDirectory = [Environment]::SystemDirectory
 
   try { Clear-InheritableHandles } catch { Write-ShimDiag ('handle-scrub-failed: ' + $_.Exception.Message) }
   $proc = [System.Diagnostics.Process]::Start($psi)

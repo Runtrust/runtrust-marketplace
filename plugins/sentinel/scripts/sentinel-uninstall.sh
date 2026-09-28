@@ -10,7 +10,7 @@
 #   On macOS, powershell is absent. Restoring the PowerShell manifest would
 #   make every PreToolUse fire an error. Instead we leave the bash-shim wired:
 #   with config.json absent, sentinel-shim.sh hits its "not configured → allow"
-#   path (sentinel-shim.sh:105) and cleanly no-ops.
+#   path (sentinel-shim.sh:110) and cleanly no-ops.
 #
 # Usage:
 #   sentinel-uninstall.sh [--home DIR] [--plugin-root DIR]

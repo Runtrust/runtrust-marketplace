@@ -73,4 +73,44 @@ assert_match "$out" '"permissionDecision":"deny"'
 assert_match "$out" 'tool_name'
 assert_match "$out" 'Bash'
 
+# 8) THE HOOK RUNS OUTSIDE THE PROJECT (connector#31): Claude Code starts the shim in the
+#    project dir, and a Bun-compiled hook loads .env / bunfig.toml from its cwd. The shim must
+#    start the hook in /, which users cannot write. The stub records its pwd.
+home="$(mktemp -d)"; mkdir -p "$home/bin" "$home/hostile project"; printf '%s' '{"tenantId":"t"}' > "$home/config.json"
+cstub="$home/bin/cwd-hook"
+printf '#!/usr/bin/env bash\npwd > "%s"\nprintf "{}\\n"\n' "$home/cwd.txt" > "$cstub"; chmod +x "$cstub"
+(cd "$home/hostile project" && printf '%s' '{"tool_name":"Read","tool_input":{}}' | bash "$SHIM" --home "$home" --hook-exe "$cstub" > /dev/null)
+got="$(cat "$home/cwd.txt" 2>/dev/null)"
+[ "$got" = "/" ] || { echo "FAIL: hook cwd is '$got', want /"; fails=$((fails+1)); }
+
+# 10) A RELATIVE --hook-exe still runs the hook (code review, FIX-31 round 1): the path is
+#     taken relative to where the shim was started, before the hook runs in /.
+home="$(mktemp -d)"; mkdir -p "$home/bin"; printf '%s' '{"tenantId":"t"}' > "$home/config.json"
+rdeny='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"relative"}}'
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" '"'"'%s'"'"'\n' "$rdeny" > "$home/bin/rel-hook"; chmod +x "$home/bin/rel-hook"
+out="$(cd "$home" && printf '%s' '{"tool_name":"Read","tool_input":{}}' | bash "$SHIM" --home "$home" --hook-exe bin/rel-hook)"
+assert_match "$out" '"permissionDecisionReason":"relative"'
+
+# 9) The Windows shim's equivalent (sentinel-shim.ps1 — its Pester suite runs locally only,
+#    so this static check is its CI guard): the hook's ProcessStartInfo runs in System32,
+#    read from the OS ([Environment]::SystemDirectory), never from an environment variable.
+PS1="$(dirname "$SHIM")/sentinel-shim.ps1"
+grep -qF '$psi.WorkingDirectory = [Environment]::SystemDirectory' "$PS1" \
+  || { echo "FAIL: sentinel-shim.ps1 does not set \$psi.WorkingDirectory = [Environment]::SystemDirectory"; fails=$((fails+1)); }
+
+# 11) THE WATCHDOG KILLS THE HOOK ITSELF (FIX-31 test-engineer pass): the hook starts as
+#     `( cd / && exec "$hook_exe" )`, and the `exec` keeps $! the hook's own PID. On a bash that
+#     forks the subshell's last command, a dropped exec leaves $! the subshell's: the watchdog
+#     kills that and the timed-out hook lives on. bash 5.2 (this suite's CI bash) elides the
+#     fork, so there only the static check can see a dropped exec; macOS's /bin/bash 3.2, which
+#     hooks.darwin.json runs, predates the elision — the behavioural check is for it.
+home="$(mktemp -d)"; mkdir -p "$home/bin"; printf '%s' '{"tenantId":"t"}' > "$home/config.json"
+survived="$home/hook-survived"
+printf '#!/usr/bin/env bash\nsleep 5\n: > "%s"\n' "$survived" > "$home/bin/hung-hook"; chmod +x "$home/bin/hung-hook"
+printf '%s' '{"tool_name":"Read","tool_input":{}}' | bash "$SHIM" --home "$home" --hook-exe "$home/bin/hung-hook" > /dev/null
+sleep 4   # the shim returns at ~3 s; a hook it failed to kill writes its marker at 5 s
+[ -f "$survived" ] && { echo "FAIL: the watchdog did not kill the timed-out hook"; fails=$((fails+1)); }
+grep -qF '( cd / && exec "$hook_exe" )' "$SHIM" \
+  || { echo 'FAIL: sentinel-shim.sh does not start the hook as ( cd / && exec "$hook_exe" )'; fails=$((fails+1)); }
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$fails FAILED"; exit 1; fi

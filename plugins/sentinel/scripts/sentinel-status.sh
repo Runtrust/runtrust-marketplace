@@ -36,6 +36,10 @@ while [ "$#" -gt 0 ]; do
     *)             echo "sentinel-status: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+# An empty --home means the default (never the caller's directory); a relative one is
+# anchored to where we were started, since the binary runs in / below.
+[ -n "$home" ] || home="${HOME:-/tmp}/.sentinel"
+case "$home" in /* | [A-Za-z]:[\\/]*) ;; *) home="$PWD/$home" ;; esac
 
 # --- not-setup gate -----------------------------------------------------------
 config="${home}/config.json"
@@ -71,4 +75,6 @@ if [ -n "$plugin_root" ]; then
 fi
 
 # --- shell out to the status binary and relay its output + exit code ----------
-"$status_bin" --json
+# In /, never the project directory /sentinel:status runs in (connector#31): a Bun-compiled
+# binary loads .env / bunfig.toml from its cwd. $status_bin is absolute (--home anchored above).
+( cd / && exec "$status_bin" --json )

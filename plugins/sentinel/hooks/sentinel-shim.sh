@@ -50,6 +50,11 @@ if [ -z "$hook_exe" ]; then
   hook_exe="${home}/bin/sentinel-cc-hook-darwin-${arch}.bin"
 fi
 
+# Anchor a relative --home / --hook-exe (or HOME) to where we were started: the hook runs
+# in / below (connector#31), where a relative path would name another file.
+case "$home" in /* | [A-Za-z]:[\\/]*) ;; *) home="$PWD/$home" ;; esac
+case "$hook_exe" in /* | [A-Za-z]:[\\/]*) ;; *) hook_exe="$PWD/$hook_exe" ;; esac
+
 config="${home}/config.json"
 
 # --- populated wires --------------------------------------------------------
@@ -127,7 +132,12 @@ fi
 delegate_timeout=3       # seconds (well under the test's 6s bound; PS bounds each phase ~2s)
 killed_marker="${out_file}.killed"
 
-"$hook_exe" < "$stdin_file" > "$out_file" 2>/dev/null &
+# The hook runs in /, never in the project directory Claude Code starts us in
+# (connector#31): a Bun-compiled hook loads .env / bunfig.toml from its cwd, and the daemon
+# it spawns inherits that cwd. $hook_exe and the temp files are absolute (above). `exec`
+# keeps $! the hook's own PID for the watchdog; a failed cd never runs the hook here — it
+# leaves empty stdout, which fails open below like any other empty stdout.
+( cd / && exec "$hook_exe" ) < "$stdin_file" > "$out_file" 2>/dev/null &
 hook_pid=$!
 (
   sleep "$delegate_timeout"

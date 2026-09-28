@@ -412,3 +412,51 @@ Describe 'sentinel-shim handle-scrub fail-open (-SelfTestScrubThrow)' {
     (Get-Content -Raw (Join-Path (Join-Path $h 'logs') 'sentinel-shim.ndjson')) | Should -Match 'handle-scrub-failed'
   }
 }
+
+Describe 'sentinel-shim hook working directory (connector#31)' {
+  # Claude Code starts the shim in the project directory, and a Bun-compiled hook loads .env /
+  # bunfig.toml from its cwd (and spawns the daemon there). The shim must start the hook in
+  # System32, which users cannot write, read from the OS — never from an environment variable.
+  It 'starts the hook in [Environment]::SystemDirectory, not the directory the shim runs in' {
+    $h = Join-Path ([IO.Path]::GetTempPath()) ("shim cwd " + [guid]::NewGuid()); New-Item -ItemType Directory -Force (Join-Path $h 'bin') | Out-Null
+    $hostile = Join-Path $h 'hostile project'; New-Item -ItemType Directory -Force $hostile | Out-Null
+    [IO.File]::WriteAllText((Join-Path $h 'config.json'), '{"tenantId":"t"}', (New-Object Text.UTF8Encoding($false)))
+    $probe = Join-Path $h 'cwd.txt'
+    $stub = Join-Path (Join-Path $h 'bin') 'cwd-hook.cmd'
+    [IO.File]::WriteAllText($stub, "@echo off`r`necho %CD%> `"$probe`"`r`necho {}`r`n", (New-Object Text.UTF8Encoding($false)))
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell'
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Shim`" -SentinelHome `"$h`" -HookExe `"$stub`""
+    $psi.WorkingDirectory = $hostile
+    $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+    $p.StandardInput.Write('{"tool_name":"Read","tool_input":{}}'); $p.StandardInput.Close()
+    $exited = $p.WaitForExit(8000)
+    if (-not $exited) { try { $p.Kill() } catch { } }
+    $exited | Should -Be $true
+    (Test-Path $probe) | Should -Be $true
+    # Case-insensitive: %CD% may read C:\Windows\System32, SystemDirectory C:\WINDOWS\system32.
+    (Get-Content -Raw $probe).Trim() | Should -Be ([Environment]::SystemDirectory)
+  }
+
+  It 'still runs a hook given as a relative -HookExe (taken relative to where the shim starts)' {
+    $h = Join-Path ([IO.Path]::GetTempPath()) ("shim relexe " + [guid]::NewGuid()); New-Item -ItemType Directory -Force (Join-Path $h 'bin') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $h 'config.json'), '{"tenantId":"t"}', (New-Object Text.UTF8Encoding($false)))
+    $deny = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"relative"}}'
+    [IO.File]::WriteAllText((Join-Path (Join-Path $h 'bin') 'rel-hook.cmd'), "@echo off`r`necho $deny`r`n", (New-Object Text.UTF8Encoding($false)))
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell'
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Shim`" -SentinelHome `"$h`" -HookExe `"bin\rel-hook.cmd`""
+    $psi.WorkingDirectory = $h
+    $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+    $p.StandardInput.Write('{"tool_name":"Read","tool_input":{}}'); $p.StandardInput.Close()
+    $exited = $p.WaitForExit(8000)
+    if (-not $exited) { try { $p.Kill() } catch { } }
+    $exited | Should -Be $true
+    ($o.Result).Trim() | Should -BeExactly $deny
+  }
+}
