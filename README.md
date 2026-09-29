@@ -7,12 +7,11 @@ workspace.
 
 > **Read-only mirror.** This repository is published automatically from
 > RunTrust's private source repository. Issues and pull requests here are not
-> monitored — reach support through your workspace at
-> https://app.runtrust.ai.
+> monitored — reach support through your RunTrust workspace.
 
 ## Install
 
-Supported platforms: **Windows** (generally available). **macOS** (arm64 + x64 autodetected) — rolling out; one-command setup becomes available once the signed darwin binaries are published to your console's `/downloads/` (pending).
+Supported platforms: **Windows** (x64) and **macOS** (Apple Silicon and Intel, detected automatically). The macOS binaries are signed with RunTrust's Apple Developer ID and notarized by Apple. The macOS install is verified end to end on Intel. The Apple Silicon build comes from the same pipeline, where its binaries pass their tests; its install is not yet verified end to end.
 
 In Claude Code:
 
@@ -30,18 +29,18 @@ token is consumed by `/sentinel:setup` and cannot be replayed. There is no
 default address — without `--endpoint` the setup stops before touching
 anything.
 
-The setup command works on Windows today. The macOS path is implemented
-(bash, arch autodetected) and will be available once the signed darwin
-binaries are published to your console's `/downloads/`.
+The same command works on Windows and macOS. On macOS it downloads the
+binaries for your CPU from your console's `/downloads/` and verifies their
+checksums before it installs anything.
 
 ## Commands
 
 - **`/sentinel:setup '<install-token>' --endpoint <address>`** — connect this
-  machine to RunTrust. Downloads the signed connector binaries from
-  `<address>/downloads/` (checksum-verified), exchanges the token for a
-  tenant-bound credential at the console that issued it, and starts the local
-  connector. Available now on Windows. macOS: pending signed-binary publish
-  (see platform note above).
+  machine to RunTrust. Downloads the connector binaries from
+  `<address>/downloads/` (checksum-verified; on macOS signed and notarized),
+  exchanges the token for a tenant-bound credential at the console that issued
+  it, and starts the local connector. Works on Windows and macOS (see the
+  platform note above).
 - **`/sentinel:status`** — show local connector status.
 - **`/sentinel:uninstall`** — remove the local connector state.
 
